@@ -1,0 +1,137 @@
+---
+# Создадим NodePort и выставем наружу порт, чтобы извне можно было бы достучаться
+# (не использую тут Ingress из-за особенностей реализации на моих серверах)
+apiVersion: v1
+kind: Service
+metadata:
+  name: blogjs-srv
+  namespace: blogjs
+  labels:
+    app: blogjs
+spec:
+  type: NodePort
+  ports:
+  - name: http
+    targetPort: 3000
+    port: 3000
+    protocol: TCP
+  selector:
+    app: blogjs
+---
+# Объект Deployment нашего приложения
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: blogjs
+  namespace: blogjs
+  labels:
+    app: blogjs
+spec:
+  selector:
+    matchLabels:
+      app: blogjs
+  replicas: 3
+  template:
+    metadata:
+      labels:
+        app: blogjs
+    spec:
+      # Разнесем по зонам.
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: app
+                operator: In
+                values:
+                - blogjs
+            topologyKey: failure-domain.beta.kubernetes.io/zone
+      containers:
+      - image: 10.100.1.2:5000/blog:latest
+        name: blogjs-pod
+        imagePullPolicy: Always
+        ports:
+          - containerPort: 3000
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        # ресурсы CPU 0.1, Mem 128
+        resources:
+          requests:
+            cpu: 0.1
+            memory: "128M"
+          limits:
+            cpu: 0.1
+            memory: "128M"
+      imagePullSecrets:
+      - name: my-registry-secret-mindbox
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: blogjs-app-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: blogjs
+  # Установим минимальное масмильное количетсво реплик т.к результаты нагрузочного теста нам говорят что 4 справятся
+  minReplicas: 1
+  maxReplicas: 4
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 75
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: AverageValue
+          averageValue: 128Mi
+
+---
+# автоскейлер создает контейнер и в нем прописан уже kubeconfig чтобы  скейлить
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: scale-up
+spec:
+  schedule: "0 7 * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+          - name: hello
+            image: autoscaler
+            args:
+            - /bin/bash
+            - -c
+            - kubectl scale --replicas=3 deployment/blogjs
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: scale-down
+spec:
+  schedule: "0 23 * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+          - name: hello
+            image: autoscaler
+            args:
+            - /bin/bash
+            - -c
+            - kubectl scale --replicas=1 deployment/blogjs
