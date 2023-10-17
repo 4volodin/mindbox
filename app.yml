@@ -54,18 +54,26 @@ spec:
         ports:
           - containerPort: 3000
         livenessProbe:
-          httpGet:
-            path: /healthz
+          # проверка если не сможет установить соединение то reload,
+          # первая через 5с, потом 3 попытки каждая через 5c и reload если неудачно
+          tcpSocket:
             port: 3000
           initialDelaySeconds: 5
           periodSeconds: 5
+          failureThreshold: 3
+        # проверка если не сможет установить соединение то удалится
+        # первая через 20с, потом через 20c и удалится если неудачно
+        readinessProbe:
+            tcpSocket:
+              port: 80
+            initialDelaySeconds: 20
+            periodSeconds: 20
         # ресурсы CPU 0.1, Mem 128
         resources:
           requests:
             cpu: 0.1
             memory: "128M"
           limits:
-            cpu: 0.1
             memory: "128M"
       imagePullSecrets:
       - name: my-registry-secret-mindbox
@@ -109,13 +117,19 @@ spec:
       template:
         spec:
           restartPolicy: OnFailure
+          imagePullSecrets:
+          - name: my-registry-secret-mindbox
           containers:
-          - name: hello
-            image: autoscaler
+          - name: scale-up
+            image: bitnami/kubectl
             args:
             - /bin/bash
             - -c
             - kubectl scale --replicas=3 deployment/blogjs
+          volumes:
+            - name: kubeconfig
+              secret:
+                secretName: kubeconfig-secret
 ---
 apiVersion: batch/v1
 kind: CronJob
@@ -128,10 +142,16 @@ spec:
       template:
         spec:
           restartPolicy: OnFailure
+          imagePullSecrets:
+          - name: my-registry-secret-mindbox
           containers:
-          - name: hello
-            image: autoscaler
+          - name: scale-down
+            image: bitnami/kubectl
             args:
             - /bin/bash
             - -c
             - kubectl scale --replicas=1 deployment/blogjs
+          volumes:
+            - name: kubeconfig
+              secret:
+                secretName: kubeconfig-secret
